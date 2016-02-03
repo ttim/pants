@@ -39,10 +39,12 @@ class BuildFile(AbstractClass):
   _PATTERN = re.compile('^{prefix}(\.[a-zA-Z0-9_-]+)?$'.format(prefix=_BUILD_FILE_PREFIX))
 
   _cache = {}
+  _family_cache = {}
 
   @staticmethod
   def clear_cache():
     BuildFile._cache = {}
+    BuildFile._family_cache = {}
 
   @staticmethod
   def _cached(project_tree, relpath, must_exist=True):
@@ -111,27 +113,34 @@ class BuildFile(AbstractClass):
         convert_to_gitignore_syntax(spec_excludes, project_tree.build_root)).patterns)
       build_ignore_patterns = PathSpec(patterns)
 
-    build_files = set()
+    build_files = OrderedSet()
     for root, dirs, files in project_tree.walk(base_relpath or '', topdown=True):
       excluded_dirs = list(build_ignore_patterns.match_files('{}/'.format(os.path.join(root, dirname))
                                                           for dirname in dirs))
       for subdir in excluded_dirs:
         # Remove trailing '/' from paths which were added to indicate that paths are paths to directories.
         dirs.remove(fast_relpath(subdir, root)[:-1])
-      for filename in files:
-        if BuildFile._is_buildfile_name(filename):
-          build_files.add(os.path.join(root, filename))
 
-    return BuildFile._build_files_from_paths(project_tree, build_files, build_ignore_patterns)
+      current_build_files = BuildFile._family_cache.get((project_tree, root, build_ignore_patterns), None)
+      if current_build_files is None:
+        current_build_files = BuildFile._build_files_from_paths(project_tree, root, build_ignore_patterns, files)
+      build_files.update(current_build_files)
+    return build_files
 
   @staticmethod
-  def _build_files_from_paths(project_tree, rel_paths, build_ignore_patterns):
+  def _build_files_from_paths(project_tree, dir_relpath, build_ignore_patterns, files_basenames):
+    file_paths = set(os.path.join(dir_relpath, file_basename) for file_basename in files_basenames
+                     if BuildFile._is_buildfile_name(file_basename))
+
     if build_ignore_patterns:
-      build_files_without_ignores = rel_paths.difference(build_ignore_patterns.match_files(rel_paths))
+      paths_without_ignores = file_paths.difference(build_ignore_patterns.match_files(file_paths))
     else:
-      build_files_without_ignores = rel_paths
-    return OrderedSet(sorted((BuildFile._cached(project_tree, relpath) for relpath in build_files_without_ignores),
+      paths_without_ignores = file_paths
+
+    build_files = OrderedSet(sorted((BuildFile(project_tree, relpath) for relpath in paths_without_ignores),
                              key=lambda build_file: build_file.full_path))
+    BuildFile._family_cache[(project_tree, dir_relpath, build_ignore_patterns)] = build_files
+    return build_files
 
   def __init__(self, project_tree, relpath, must_exist=True):
     """Creates a BuildFile object representing the BUILD file family at the specified path.
@@ -243,11 +252,14 @@ class BuildFile(AbstractClass):
   @staticmethod
   def get_build_files_family(project_tree, dir_relpath, build_ignore_patterns=None):
     """Returns all the BUILD files on a path"""
-    build_files = set()
-    for build in sorted(project_tree.glob1(dir_relpath, '{prefix}*'.format(prefix=BuildFile._BUILD_FILE_PREFIX))):
-      if BuildFile._is_buildfile_name(build) and project_tree.isfile(os.path.join(dir_relpath, build)):
-        build_files.add(os.path.join(dir_relpath, build))
-    return BuildFile._build_files_from_paths(project_tree, build_files, build_ignore_patterns)
+    cache_key = (project_tree, dir_relpath, build_ignore_patterns)
+    if cache_key in BuildFile._family_cache:
+      return BuildFile._family_cache[cache_key]
+
+    base_names = project_tree.glob1(dir_relpath, '{prefix}*'.format(prefix=BuildFile._BUILD_FILE_PREFIX))
+    return BuildFile._build_files_from_paths(project_tree, dir_relpath, build_ignore_patterns,
+                                             (base_name for base_name in base_names
+                                              if project_tree.isfile(os.path.join(dir_relpath, base_name))))
 
   @deprecated('0.0.72', hint_message='Use get_build_files_family instead.')
   def family(self):

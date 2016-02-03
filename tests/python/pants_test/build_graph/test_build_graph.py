@@ -9,6 +9,7 @@ import six
 
 from pants.backend.jvm.targets.jar_dependency import JarDependency
 from pants.backend.jvm.targets.jar_library import JarLibrary
+from pants.base.build_file import BuildFile
 from pants.build_graph.address import Address, parse_spec
 from pants.build_graph.address_lookup_error import AddressLookupError
 from pants.build_graph.build_graph import BuildGraph
@@ -247,6 +248,8 @@ class BuildGraphTest(BaseTest):
   def test_invalid_address(self):
     with self.assertRaisesRegexp(AddressLookupError, '^.* does not contain any BUILD files.$'):
       self.inject_address_closure('//:a')
+
+    BuildFile.clear_cache()
 
     self.add_to_build_file('BUILD',
                            'target(name="a", '
