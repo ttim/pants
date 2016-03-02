@@ -297,6 +297,7 @@ class DependencyUsageGraph(object):
           'cost': node.cost,
           'cost_transitive': node.trans_cost,
           'products_total': node.products_total,
-          'dependencies': [gen_dep_edge(node, edge, dep_tgt) for dep_tgt, edge in node.dep_edges.items()]
+          'derivations': list(node.derivations),
+          'dependencies': [gen_dep_edge(node, edge, dep_tgt) for dep_tgt, edge in node.dep_edges.items()],
         }
     yield json.dumps(res_dict, indent=2, sort_keys=True)
