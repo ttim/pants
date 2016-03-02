@@ -131,6 +131,34 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
     # Generators don't implement len.
     return sum(1 for _ in contents)
 
+  def create_nodes_with_costs(self, targets):
+    cost_cache = {}
+    trans_cost_cache = {}
+    size_estimator = self.size_estimators[self.get_options().size_estimator]
+
+    def cost(target):
+      if target not in cost_cache:
+        cost_cache[target] = size_estimator(target.sources_relative_to_buildroot())
+      return cost_cache[target]
+
+    def trans_cost(target):
+      if target not in trans_cost_cache:
+        dep_sum = sum(trans_cost(dep) for dep in target.dependencies)
+        trans_cost_cache[target] = cost(target) + dep_sum
+      return trans_cost_cache[target]
+
+    nodes = dict()
+    queue = set(targets)
+    while queue:
+      target = queue.pop()
+      concrete_target = target.concrete_derived_from
+      if concrete_target not in nodes:
+        nodes[concrete_target] = Node(concrete_target, cost(concrete_target), trans_cost(concrete_target))
+        queue.update(target.dependencies)
+        queue.update(concrete_target.dependencies)
+
+    return nodes
+
   def create_dep_usage_graph(self, targets, buildroot):
     """Creates a graph of concrete targets, with their sum of products and dependencies.
 
@@ -141,16 +169,15 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
     classes_by_source = self.context.products.get_data('classes_by_source')
     runtime_classpath = self.context.products.get_data('runtime_classpath')
     product_deps_by_src = self.context.products.get_data('product_deps_by_src')
-    nodes = dict()
-    for target in targets:
-      if not self._select(target):
-        continue
+
+    selected_targets = [target for target in targets if self._select(target)]
+    nodes = self.create_nodes_with_costs(selected_targets)
+
+    for target in selected_targets:
       # Create or extend a Node for the concrete version of this target.
       concrete_target = target.concrete_derived_from
       products_total = self._count_products(runtime_classpath, target)
       node = nodes.get(concrete_target)
-      if not node:
-        node = nodes.setdefault(concrete_target, Node(concrete_target))
       node.add_derivation(target, products_total)
 
       # Record declared Edges.
@@ -172,17 +199,14 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
             normalized_deps = self._normalize_product_dep(buildroot, classes_by_source, product_dep)
             node.add_edge(Edge(is_declared=is_declared, products_used=normalized_deps), derived_from)
 
-    # Prune any Nodes with 0 products.
-    for concrete_target, node in nodes.items()[:]:
-      if node.products_total == 0:
-        nodes.pop(concrete_target)
-
-    return DependencyUsageGraph(nodes, self.size_estimators[self.get_options().size_estimator])
+    return DependencyUsageGraph(nodes)
 
 
 class Node(object):
-  def __init__(self, concrete_target):
+  def __init__(self, concrete_target, cost, trans_cost):
     self.concrete_target = concrete_target
+    self.cost = cost
+    self.trans_cost = trans_cost
     self.products_total = 0
     self.derivations = set()
     # Dict mapping concrete dependency targets to an Edge object.
@@ -211,22 +235,8 @@ class Edge(object):
 
 class DependencyUsageGraph(object):
 
-  def __init__(self, nodes, size_estimator):
+  def __init__(self, nodes):
     self._nodes = nodes
-    self._size_estimator = size_estimator
-    self._cost_cache = {}
-    self._trans_cost_cache = {}
-
-  def _cost(self, target):
-    if target not in self._cost_cache:
-      self._cost_cache[target] = self._size_estimator(target.sources_relative_to_buildroot())
-    return self._cost_cache[target]
-
-  def _trans_cost(self, target):
-    if target not in self._trans_cost_cache:
-      dep_sum = sum(self._trans_cost(dep) for dep in target.dependencies)
-      self._trans_cost_cache[target] = self._cost(target) + dep_sum
-    return self._trans_cost_cache[target]
 
   def _edge_type(self, target, edge, dep):
     if target == dep:
@@ -256,7 +266,10 @@ class DependencyUsageGraph(object):
     Score = namedtuple('Score', ('badness', 'max_usage', 'cost_transitive', 'target'))
     scores = []
     for target, max_usage in max_target_usage.items():
-      cost_transitive = self._trans_cost(target)
+      if self._nodes[target].products_total == 0:
+        continue
+
+      cost_transitive = self._nodes[target].trans_cost
       score = int(cost_transitive / (max_usage if max_usage > 0.0 else 1.0))
       scores.append(Score(score, max_usage, cost_transitive, target.address.spec))
 
@@ -280,8 +293,8 @@ class DependencyUsageGraph(object):
       }
     for node in self._nodes.values():
       res_dict[node.concrete_target.address.spec] = {
-          'cost': self._cost(node.concrete_target),
-          'cost_transitive': self._trans_cost(node.concrete_target),
+          'cost': node.cost,
+          'cost_transitive': node.trans_cost,
           'products_total': node.products_total,
           'dependencies': [gen_dep_edge(node, edge, dep_tgt) for dep_tgt, edge in node.dep_edges.items()]
         }
