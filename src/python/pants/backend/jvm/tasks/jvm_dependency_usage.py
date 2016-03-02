@@ -83,7 +83,7 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
       self._render(graph, sys.stdout)
 
   def _render(self, graph, fh):
-    chunks = graph.to_summary() if self.get_options().summary else graph.to_json()
+    chunks = graph.to_summary() if self.get_options().summary else [graph.to_json()]
     for chunk in chunks:
       fh.write(chunk)
     fh.flush()
@@ -224,11 +224,14 @@ class Node(object):
 class Edge(object):
   """Record a set of used products, and a boolean indicating that a depedency edge was declared."""
 
-  def __init__(self, is_declared=False, products_used=None):
+  def __init__(self, is_declared=False, products_used=None, loaded=False):
     self.products_used = products_used or set()
     self.is_declared = is_declared
+    self.synthetic = loaded
 
   def __iadd__(self, that):
+    if self.synthetic:
+      raise Exception()
     self.products_used |= that.products_used
     self.is_declared |= that.is_declared
     return self
@@ -300,4 +303,27 @@ class DependencyUsageGraph(object):
           'derivations': list(node.derivations),
           'dependencies': [gen_dep_edge(node, edge, dep_tgt) for dep_tgt, edge in node.dep_edges.items()],
         }
-    yield json.dumps(res_dict, indent=2, sort_keys=True)
+    return json.dumps(res_dict, indent=2, sort_keys=True)
+
+  @staticmethod
+  def from_json(json_str):
+    def edge_from_dict(dep):
+      products_used = [str(i) for i in range(0, dep['products_used'])]
+      return Edge(dep['dependency_type'] == 'self' or dep['dependency_type'] == 'declared',
+                  products_used, loaded=True), dep['target']
+
+    def node_from_dict(target, node_dict):
+      node = Node(target, node_dict['cost'], node_dict['cost_transitive'])
+      node.products_total = node_dict['products_total']
+      node.derivations.update(node_dict['derivations'])
+      for dep in node_dict['dependencies']:
+        edge, dest = edge_from_dict(dep)
+        node.dep_edges[dest] = edge
+      return node
+
+    original_dict = json.loads(json_str)
+    nodes = {}
+    for target, node_dict in original_dict.items():
+      nodes[target] = node_from_dict(target, node_dict)
+
+    return DependencyUsageGraph(nodes)
