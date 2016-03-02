@@ -152,8 +152,9 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
     while queue:
       target = queue.pop()
       concrete_target = target.concrete_derived_from
-      if concrete_target not in nodes:
-        nodes[concrete_target] = Node(concrete_target, cost(concrete_target), trans_cost(concrete_target))
+      spec = concrete_target.address.spec
+      if spec not in nodes:
+        nodes[spec] = Node(spec, cost(concrete_target), trans_cost(concrete_target))
         queue.update(target.dependencies)
         queue.update(concrete_target.dependencies)
 
@@ -177,14 +178,14 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
       # Create or extend a Node for the concrete version of this target.
       concrete_target = target.concrete_derived_from
       products_total = self._count_products(runtime_classpath, target)
-      node = nodes.get(concrete_target)
-      node.add_derivation(target, products_total)
+      node = nodes.get(concrete_target.address.spec)
+      node.add_derivation(target.address.spec, products_total)
 
       # Record declared Edges.
       for dep_tgt in self._resolve_aliases(target):
         derived_from = dep_tgt.concrete_derived_from
         if self._select(derived_from):
-          node.add_edge(Edge(is_declared=True, products_used=set()), derived_from)
+          node.add_edge(Edge(is_declared=True, products_used=set()), derived_from.address.spec)
 
       # Record the used products and undeclared Edges for this target. Note that some of
       # these may be self edges, which are considered later.
@@ -197,7 +198,7 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
               continue
             is_declared = self._is_declared_dep(target, dep_tgt)
             normalized_deps = self._normalize_product_dep(buildroot, classes_by_source, product_dep)
-            node.add_edge(Edge(is_declared=is_declared, products_used=normalized_deps), derived_from)
+            node.add_edge(Edge(is_declared=is_declared, products_used=normalized_deps), derived_from.address.spec)
 
     return DependencyUsageGraph(nodes)
 
@@ -271,7 +272,7 @@ class DependencyUsageGraph(object):
 
       cost_transitive = self._nodes[target].trans_cost
       score = int(cost_transitive / (max_usage if max_usage > 0.0 else 1.0))
-      scores.append(Score(score, max_usage, cost_transitive, target.address.spec))
+      scores.append(Score(score, max_usage, cost_transitive, target))
 
     # Output in order by score.
     yield '[\n'
@@ -286,13 +287,13 @@ class DependencyUsageGraph(object):
     res_dict = {}
     def gen_dep_edge(node, edge, dep_tgt):
       return {
-        'target': dep_tgt.address.spec,
+        'target': dep_tgt,
         'dependency_type': self._edge_type(node.concrete_target, edge, dep_tgt),
         'products_used': len(edge.products_used),
         'products_used_ratio': self._used_ratio(dep_tgt, edge),
       }
     for node in self._nodes.values():
-      res_dict[node.concrete_target.address.spec] = {
+      res_dict[node.concrete_target] = {
           'cost': node.cost,
           'cost_transitive': node.trans_cost,
           'products_total': node.products_total,
