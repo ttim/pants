@@ -64,17 +64,17 @@ class TestJvmDependencyUsage(TaskTestBase):
 
     graph = dep_usage.create_dep_usage_graph([t1, t2, t3], '')
 
-    self.assertEqual(graph._nodes[t1].products_total, 2)
-    self.assertEqual(graph._nodes[t2].products_total, 1)
-    self.assertEqual(graph._nodes[t3].products_total, 2)
+    self.assertEqual(graph._nodes[t1.address.spec].products_total, 2)
+    self.assertEqual(graph._nodes[t2.address.spec].products_total, 1)
+    self.assertEqual(graph._nodes[t3.address.spec].products_total, 2)
 
-    self.assertEqual(graph._nodes[t1].dep_edges, {})
-    self.assertEqual(len(graph._nodes[t2].dep_edges[t1].products_used), 1)
-    self.assertEqual(len(graph._nodes[t3].dep_edges[t1].products_used), 2)
+    self.assertEqual(graph._nodes[t1.address.spec].dep_edges, {})
+    self.assertEqual(len(graph._nodes[t2.address.spec].dep_edges[t1.address.spec].products_used), 1)
+    self.assertEqual(len(graph._nodes[t3.address.spec].dep_edges[t1.address.spec].products_used), 2)
 
-    self.assertEqual(graph._trans_cost(t1), 2)
-    self.assertEqual(graph._trans_cost(t2), 3)
-    self.assertEqual(graph._trans_cost(t3), 4)
+    self.assertEqual(graph._nodes[t1.address.spec].trans_cost, 2)
+    self.assertEqual(graph._nodes[t2.address.spec].trans_cost, 3)
+    self.assertEqual(graph._nodes[t3.address.spec].trans_cost, 4)
 
     self._cover_output(graph)
 
@@ -101,7 +101,7 @@ class TestJvmDependencyUsage(TaskTestBase):
                                'b.java': ['z1.class', 'z2.class']}
     graph = dep_usage.create_dep_usage_graph([t1, t1_x, t1_y, t1_z, t2], '')
 
-    self.assertEqual(graph._nodes[t1].products_total, 5)
-    self.assertEqual(len(graph._nodes[t2].dep_edges[t1].products_used), 3)
+    self.assertEqual(graph._nodes[t1.address.spec].products_total, 5)
+    self.assertEqual(len(graph._nodes[t2.address.spec].dep_edges[t1.address.spec].products_used), 3)
 
     self._cover_output(graph)
