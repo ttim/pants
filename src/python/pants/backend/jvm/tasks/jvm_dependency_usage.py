@@ -63,8 +63,8 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
 
   @classmethod
   def prepare(cls, options, round_manager):
-    super(JvmDependencyUsage, cls).prepare(options, round_manager)
     if not options.only_cached:
+      super(JvmDependencyUsage, cls).prepare(options, round_manager)
       round_manager.require_data('classes_by_source')
       round_manager.require_data('runtime_classpath')
       round_manager.require_data('product_deps_by_src')
