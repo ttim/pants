@@ -60,10 +60,11 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
     register('--output-file', type=str,
              help='Output destination. When unset, outputs to <stdout>.')
     register('--only-cached', action='store_true', help='Use only cached value, fail otherwise.')
+    register('--combine', action='append', help='Combine different graphs to get aggregated result.')
 
   @classmethod
   def prepare(cls, options, round_manager):
-    if not options.only_cached:
+    if not options.only_cached and not options.combine:
       super(JvmDependencyUsage, cls).prepare(options, round_manager)
       round_manager.require_data('classes_by_source')
       round_manager.require_data('runtime_classpath')
@@ -88,7 +89,20 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
   def execute(self):
     targets = (self.context.targets() if self.get_options().transitive
                else self.context.target_roots)
-    graph = self.get_dep_usage_graph(targets, get_buildroot())
+    if self.get_options().combine:
+      if self.context.targets():
+        raise TaskError("combine option was passed, in this case passed target list should be empty.")
+
+      graph = None
+      for graph_path in self.get_options().combine:
+        with open(graph_path) as fp:
+          current = DependencyUsageGraph.from_json(fp.read())
+        if graph is None:
+          graph = current
+        else:
+          graph = graph.combine(current)
+    else:
+      graph = self.get_dep_usage_graph(targets, get_buildroot())
 
     output_file = self.get_options().output_file
     if output_file:
@@ -296,6 +310,24 @@ class DependencyUsageGraph(object):
   def _used_ratio(self, dep_tgt, edge):
     dep_tgt_products_total = max(self._nodes[dep_tgt].products_total if dep_tgt in self._nodes else 1, 1)
     return len(edge.products_used) / dep_tgt_products_total
+
+  def combine(self, other):
+    keys = set(self._nodes.keys())
+    keys.update(other._nodes.keys())
+
+    nodes = {}
+    for key in keys:
+      if key in self._nodes and key not in other._nodes:
+        nodes[key] = self._nodes[key]
+      elif key not in self._nodes and key in other._nodes:
+        nodes[key] = other._nodes[key]
+      else:
+        # TODO(tabishev): should be something better
+        if self._nodes[key].dep_edges:
+          nodes[key] = self._nodes[key]
+        else:
+          nodes[key] = other._nodes[key]
+    return DependencyUsageGraph(nodes)
 
   def to_summary(self):
     """Outputs summarized dependencies ordered by a combination of max usage and cost."""
