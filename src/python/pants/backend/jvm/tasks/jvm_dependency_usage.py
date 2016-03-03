@@ -12,11 +12,14 @@ from collections import defaultdict, namedtuple
 
 from pants.backend.jvm.targets.jar_library import JarLibrary
 from pants.backend.jvm.tasks.classpath_util import ClasspathUtil
+from pants.backend.jvm.tasks.ivy_task_mixin import IvyResolveFingerprintStrategy
 from pants.backend.jvm.tasks.jvm_dependency_analyzer import JvmDependencyAnalyzer
 from pants.base.build_environment import get_buildroot
+from pants.base.exceptions import TaskError
 from pants.build_graph.resources import Resources
 from pants.build_graph.target import Target
-from pants.util.dirutil import fast_relpath
+from pants.invalidation.cache_manager import VersionedTargetSet
+from pants.util.dirutil import fast_relpath, safe_mkdir
 from pants.util.fileutil import create_size_estimators
 
 
@@ -56,13 +59,26 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
              help='Score all targets in the build graph transitively.')
     register('--output-file', type=str,
              help='Output destination. When unset, outputs to <stdout>.')
+    register('--only-cached', action='store_true', help='Use only cached value, fail otherwise.')
 
   @classmethod
   def prepare(cls, options, round_manager):
     super(JvmDependencyUsage, cls).prepare(options, round_manager)
-    round_manager.require_data('classes_by_source')
-    round_manager.require_data('runtime_classpath')
-    round_manager.require_data('product_deps_by_src')
+    if not options.only_cached:
+      round_manager.require_data('classes_by_source')
+      round_manager.require_data('runtime_classpath')
+      round_manager.require_data('product_deps_by_src')
+
+  @classmethod
+  def implementation_version(cls):
+    return super(JvmDependencyUsage, cls).implementation_version() + [('JvmDependencyUsage', 1)]
+
+  def check_artifact_cache_for(self, invalidation_check):
+    # Jvm dependency usage depends on ivy resolve which is global, so we are using the same strategy as in ivy here.
+    return [self.task_vts(invalidation_check)]
+
+  def task_vts(self, invalidation_check):
+    return VersionedTargetSet.from_versioned_targets(invalidation_check.all_vts)
 
   @classmethod
   def skip(cls, options):
@@ -72,7 +88,8 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
   def execute(self):
     targets = (self.context.targets() if self.get_options().transitive
                else self.context.target_roots)
-    graph = self.create_dep_usage_graph(targets, get_buildroot())
+    graph = self.get_dep_usage_graph(targets, get_buildroot())
+
     output_file = self.get_options().output_file
     if output_file:
       self.context.log.info('Writing dependency usage to {}'.format(output_file))
@@ -130,6 +147,32 @@ class JvmDependencyUsage(JvmDependencyAnalyzer):
     contents = ClasspathUtil.classpath_contents((target,), classpath_products)
     # Generators don't implement len.
     return sum(1 for _ in contents)
+
+  def get_dep_usage_graph(self, targets, buildroot):
+    fingerprint_strategy = IvyResolveFingerprintStrategy(('default',))
+    with self.invalidated(targets,
+                          fingerprint_strategy=fingerprint_strategy) as invalidation_check:
+      if not invalidation_check.all_vts:
+        return DependencyUsageGraph({})
+
+      vts = self.task_vts(invalidation_check)
+      hash = vts.cache_key.hash
+
+      graph_json = os.path.join(self.workdir, 'graph_{}.json'.format(hash))
+      if not os.path.exists(graph_json):
+        if self.get_options().only_cached:
+          raise TaskError("only_cached options was passed, but usages graph wasn't in buildcache.")
+
+        graph = self.create_dep_usage_graph(targets, buildroot)
+        safe_mkdir(self.workdir)
+        with open(graph_json, mode='w') as fp:
+          fp.write(graph.to_json())
+        if self.artifact_cache_writes_enabled():
+          self.update_artifact_cache([(vts, [graph_json])])
+        return graph
+      else:
+        with open(graph_json) as fp:
+          return DependencyUsageGraph.from_json(fp.read())
 
   def create_nodes_with_costs(self, targets):
     cost_cache = {}
